@@ -3,9 +3,9 @@ import argparse, torch, random
 from diffusers import StableDiffusionPipeline, EulerAncestralDiscreteScheduler
 from pathlib import Path
 
-p = argparse.ArgumentParser()
-p.add_argument("--base", required=True)      # diffusers dir for SD 1.5
-p.add_argument("--lora", required=True)      # .safetensors path
+p = argparse.ArgumentParser(description="SD 1.5 + optional LoRA inference")
+p.add_argument("--base", required=True)
+p.add_argument("--lora", default=None)           # optional now
 p.add_argument("--prompt", required=True)
 p.add_argument("--out", default="output.png")
 p.add_argument("--steps", type=int, default=30)
@@ -18,27 +18,37 @@ args = p.parse_args()
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 dtype = torch.float16 if device == "cuda" else torch.float32
-if args.seed is None: args.seed = random.randint(0, 2**31 - 1)
+if args.seed is None:
+    args.seed = random.randint(0, 2**31 - 1)
 gen = torch.Generator(device=device).manual_seed(args.seed)
 
 pipe = StableDiffusionPipeline.from_pretrained(args.base, torch_dtype=dtype)
 pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
 pipe.safety_checker = None
-try: pipe.enable_xformers_memory_efficient_attention()
-except Exception: pass
+try:
+    pipe.enable_xformers_memory_efficient_attention()
+except Exception:
+    pass
 pipe = pipe.to(device)
 
-pipe.load_lora_weights(args.lora)
-try: pipe.fuse_lora(lora_scale=args.lora_scale)
-except Exception:
-    if hasattr(pipe, "set_adapters"):
-        pipe.set_adapters(["default"], adapter_weights=[args.lora_scale])
+# Load LoRA only if provided
+if args.lora:
+    pipe.load_lora_weights(args.lora)
+    try:
+        pipe.fuse_lora(lora_scale=args.lora_scale)
+    except Exception:
+        if hasattr(pipe, "set_adapters"):
+            pipe.set_adapters(["default"], adapter_weights=[args.lora_scale])
 
-img = pipe(
-    prompt=args.prompt, num_inference_steps=args.steps, guidance_scale=args.scale,
-    width=args.width, height=args.height, generator=gen
+image = pipe(
+    prompt=args.prompt,
+    num_inference_steps=args.steps,
+    guidance_scale=args.scale,
+    width=args.width,
+    height=args.height,
+    generator=gen,
 ).images[0]
 
-Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-img.save(args.out)
-print(f"Saved {args.out}  (seed={args.seed})")
+out = Path(args.out); out.parent.mkdir(parents=True, exist_ok=True)
+image.save(out)
+print(f"Saved {out} (seed={args.seed})  lora={'None' if not args.lora else args.lora}")
